@@ -3,6 +3,8 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets
 from torchvision import transforms as T
 from tqdm import tqdm
+from torch.nn import functional as F
+import torch
 
 
 class LabelNameImageFolder(datasets.ImageFolder):
@@ -19,8 +21,13 @@ class LabelNameImageFolder(datasets.ImageFolder):
         elif "dog" in label_lower:
             label = 1
         else:
-            raise ValueError(f"Unknown label name: {label_name}")
-        return sample, label
+            raise ValueError(
+                f"LabelNameImageFolder found unexpected label: {label_name}"
+            )
+
+        # label = F.one_hot(torch.tensor(label), num_classes=2).float()
+
+        return (sample, label)
 
 
 class CatDogDataModule(LightningDataModule):
@@ -33,7 +40,7 @@ class CatDogDataModule(LightningDataModule):
     def __init__(
         self,
         data_dir: str = "./data/PetImages",
-        batch_size: int = 64,
+        batch_size: int = 32,
         num_workers: int = 4,
     ):
         super().__init__()
@@ -41,8 +48,23 @@ class CatDogDataModule(LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
 
-    def load_files(self, data_dir, categories, load_content=True):
-        default_transform = T.Compose(
+    def load_files(self, data_dir):
+        dataset = LabelNameImageFolder(root=data_dir)
+        return dataset
+
+    def setup(self, stage=None):
+        train_transform = T.Compose(
+            [
+                T.Resize((448, 448)),
+                T.RandomHorizontalFlip(),
+                T.RandomRotation(7),
+                T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+                T.Lambda(lambda img: img.convert("RGB")),
+                T.ToTensor(),
+            ]
+        )
+
+        val_transform = T.Compose(
             [
                 T.Resize((448, 448)),
                 T.Lambda(lambda img: img.convert("RGB")),
@@ -50,34 +72,88 @@ class CatDogDataModule(LightningDataModule):
             ]
         )
 
-        dataset = LabelNameImageFolder(
-            root=data_dir,
-            transform=default_transform,
-        )
-        if not load_content:
-            dataset.samples = [
-                (path, label)
-                for path, label in dataset.samples
-                if dataset.classes[label] in categories
-            ]
-        return dataset
+        # Create separate dataset instances with different transforms
+        train_full_dataset = self.load_files(self.data_dir)
+        train_full_dataset.transform = train_transform
 
-    def setup(self, stage=None):
-        dataset = self.load_files(
-            self.data_dir, categories=["cats", "dogs"], load_content=True
-        )
+        val_full_dataset = self.load_files(self.data_dir)
+        val_full_dataset.transform = val_transform
 
-        total_size = len(dataset)
+        total_size = len(train_full_dataset)
         train_size = int(0.9 * total_size)
         val_size = total_size - train_size
 
-        self.train_dataset, self.val_dataset = random_split(
-            dataset, [train_size, val_size]
-        )
+        # Split each dataset independently
+        train_dataset, _ = random_split(train_full_dataset, [train_size, val_size])
+        _, val_dataset = random_split(val_full_dataset, [train_size, val_size])
+
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
         return self
 
     def train_dataloader(self):
 
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+        )
+
+
+class ImageCompressionDataModule(LightningDataModule):
+    """
+    DataModule for loading images for compression tasks.
+    Image: Resized to (448, 448), RGB converted, Tensor transformed.
+    """
+
+    def __init__(
+        self,
+        data_dir: str = "./data/PetImages",
+        batch_size: int = 32,
+        num_workers: int = 4,
+    ):
+        super().__init__()
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+    def load_files(self, data_dir):
+        dataset = datasets.ImageFolder(root=data_dir)
+        return dataset
+
+    def setup(self, stage=None):
+        transform = T.Compose(
+            [
+                T.Resize((448, 448)),
+                T.Lambda(lambda img: img.convert("RGB")),
+                T.ToTensor(),
+                T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ]
+        )
+
+        full_dataset = self.load_files(self.data_dir)
+        full_dataset.transform = transform
+
+        total_size = len(full_dataset)
+        train_size = int(0.9 * total_size)
+        val_size = total_size - train_size
+
+        train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        return self
+
+    def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,

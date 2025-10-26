@@ -18,9 +18,9 @@ init()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
-from src.dataset import CatDogDataModule
-from src.models.cat_dog_model import CatDogModel
-
+from src.dataset import ImageCompressionDataModule
+from src.models.compression.vq_vae import VQVAE
+from callbacks.reconstruction_callback import ReconstructionCallback
 
 print(Fore.GREEN + text2art("Training Starting!") + Fore.RESET)
 print(Fore.GREEN + "Ved Patel - All Rights Reserved\n" + Fore.RESET)
@@ -29,7 +29,7 @@ print(Fore.GREEN + "Ved Patel - All Rights Reserved\n" + Fore.RESET)
 print(Fore.BLUE + "loading dataset..." + Fore.RESET)
 
 
-data_module = CatDogDataModule(
+data_module = ImageCompressionDataModule(
     data_dir="./data/PetImages",
 )
 
@@ -39,12 +39,19 @@ print(Fore.BLUE + "dataset loaded successfully\n" + Fore.RESET)
 
 print(Fore.BLUE + "loading model..." + Fore.RESET)
 
-model = CatDogModel()
+model = VQVAE(
+    h_dim=128,
+    res_h_dim=128,
+    n_res_layers=3,
+    n_embeddings=512,
+    embedding_dim=64,
+    beta=0.25,
+)
 
 checkpoint_callback = ModelCheckpoint(
     monitor="val_loss",
     dirpath="./checkpoints",
-    filename="cat_dog_model_best",
+    filename="vq_vae_model_best",
     save_top_k=1,
     mode="min",
 )
@@ -55,8 +62,13 @@ early_stopping = EarlyStopping(
     mode="min",
 )
 
+reconstruction_callback = ReconstructionCallback(
+    input_image_path="images/compress_test.png",
+    output_dir="images/reconstructed",
+)
+
 logger = WandbLogger(
-    project=" LIDMP - Classifier",
+    project="LIDMP - VQ-VAE",
     log_model="all",
 )
 
@@ -68,10 +80,10 @@ trainer = Trainer(
     max_epochs=-1,
     accelerator="auto",
     devices="auto",
-    callbacks=[checkpoint_callback, early_stopping],
+    callbacks=[checkpoint_callback, early_stopping, reconstruction_callback],
     logger=logger,
 )
 
-logger.watch(model, log="all", log_freq=50)
+logger.watch(model, log="all", log_freq=25)
 
 trainer.fit(model, datamodule=data_module)
