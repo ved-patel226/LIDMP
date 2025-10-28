@@ -40,13 +40,16 @@ print(Fore.BLUE + "dataset loaded successfully\n" + Fore.RESET)
 print(Fore.BLUE + "loading model..." + Fore.RESET)
 
 model = VQVAE(
-    h_dim=128,
+    h_dim=56,
     res_h_dim=128,
     n_res_layers=3,
-    n_embeddings=512,
-    embedding_dim=64,
+    n_embeddings=256,
+    embedding_dim=16,
     beta=0.25,
+    lr=1e-3,
 )
+# model = VQVAE.load_from_checkpoint("checkpoints/vq_vae.ckpt")
+# model.compile()
 
 checkpoint_callback = ModelCheckpoint(
     monitor="val_loss",
@@ -64,7 +67,6 @@ early_stopping = EarlyStopping(
 
 reconstruction_callback = ReconstructionCallback(
     input_image_path="images/compress_test.png",
-    output_dir="images/reconstructed",
 )
 
 logger = WandbLogger(

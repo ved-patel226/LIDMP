@@ -118,7 +118,7 @@ class ImageCompressionDataModule(LightningDataModule):
     def __init__(
         self,
         data_dir: str = "./data/PetImages",
-        batch_size: int = 32,
+        batch_size: int = 4,
         num_workers: int = 4,
     ):
         super().__init__()
@@ -131,7 +131,19 @@ class ImageCompressionDataModule(LightningDataModule):
         return dataset
 
     def setup(self, stage=None):
-        transform = T.Compose(
+        train_transform = T.Compose(
+            [
+                T.Resize((448, 448)),
+                T.RandomHorizontalFlip(),
+                T.RandomRotation(10),
+                T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+                T.Lambda(lambda img: img.convert("RGB")),
+                T.ToTensor(),
+                T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ]
+        )
+
+        val_transform = T.Compose(
             [
                 T.Resize((448, 448)),
                 T.Lambda(lambda img: img.convert("RGB")),
@@ -140,14 +152,19 @@ class ImageCompressionDataModule(LightningDataModule):
             ]
         )
 
-        full_dataset = self.load_files(self.data_dir)
-        full_dataset.transform = transform
+        # Create separate datasets with different transforms
+        train_full_dataset = self.load_files(self.data_dir)
+        train_full_dataset.transform = train_transform
 
-        total_size = len(full_dataset)
+        val_full_dataset = self.load_files(self.data_dir)
+        val_full_dataset.transform = val_transform
+
+        total_size = len(train_full_dataset)
         train_size = int(0.9 * total_size)
         val_size = total_size - train_size
 
-        train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+        train_dataset, _ = random_split(train_full_dataset, [train_size, val_size])
+        _, val_dataset = random_split(val_full_dataset, [train_size, val_size])
 
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset

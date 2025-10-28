@@ -3,42 +3,54 @@ import torch
 import pytorch_lightning as pl
 from PIL import Image
 import numpy as np
+import wandb
 
 
 class ReconstructionCallback(pl.Callback):
-    def __init__(self, input_image_path, output_dir, filename="reconstructed.png"):
+    def __init__(self, input_image_path, log_every_n_steps=500):
         super().__init__()
         self.input_image_path = input_image_path
-        self.base_output_dir = output_dir
-        self.output_dir = self._get_versioned_dir()
-        self.filename = filename
-        os.makedirs(self.output_dir, exist_ok=True)
         self.image = self._load_image()
-        self.epoch_counter = 0
-
-    def _get_versioned_dir(self):
-        version = 1
-        while True:
-            versioned_dir = os.path.join(self.base_output_dir, f"v{version}")
-            if not os.path.exists(versioned_dir):
-                return versioned_dir
-            version += 1
+        self.input_logged = False
+        self.log_every_n_steps = log_every_n_steps
 
     def _load_image(self):
         img = Image.open(self.input_image_path).convert("RGB")
         img = np.array(img) / 255.0
+        img = (
+            np.array(
+                Image.fromarray((img * 255).astype(np.uint8)).resize(
+                    (448, 448), Image.BICUBIC
+                )
+            )
+            / 255.0
+        )
         img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+        img = (img - 0.5) / 0.5
         return img
 
-    def on_train_epoch_start(self, trainer, pl_module):
-        pl_module.eval()
-        with torch.no_grad():
-            output = pl_module(self.image.to(pl_module.device))
-            _, output, _ = output
-            output = output.squeeze().cpu().permute(1, 2, 0).numpy()
-            output = ((output + 1) * 127.5).clip(0, 255).astype(np.uint8)
-            out_img = Image.fromarray(output)
-            self.epoch_counter += 1
-            out_path = os.path.join(self.output_dir, f"{self.epoch_counter}.png")
-            out_img.save(out_path)
-            print(f"Reconstructed image saved to {out_path}")
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        global_step = trainer.global_step
+        if global_step % self.log_every_n_steps == 0:
+            pl_module.eval()
+            with torch.no_grad():
+                _, output, _ = pl_module(self.image.to(pl_module.device))
+                output = output.squeeze().cpu().permute(1, 2, 0).numpy()
+                output = ((output + 1) * 127.5).clip(0, 255).astype(np.uint8)
+
+                log_dict = {
+                    "reconstruction/output": wandb.Image(
+                        output, caption=f"Step {global_step}"
+                    ),
+                }
+
+                if not self.input_logged:
+                    input_img = self.image.squeeze().cpu().permute(1, 2, 0).numpy()
+                    input_img = ((input_img + 1) * 127.5).clip(0, 255).astype(np.uint8)
+                    log_dict["reconstruction/input"] = wandb.Image(
+                        input_img, caption="Original"
+                    )
+                    self.input_logged = True
+
+                trainer.logger.experiment.log(log_dict)
+            pl_module.train()
