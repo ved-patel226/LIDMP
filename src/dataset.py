@@ -113,6 +113,9 @@ class ImageCompressionDataModule(LightningDataModule):
     """
     DataModule for loading images for compression tasks.
     Image: Resized to (448, 448), RGB converted, Tensor transformed.
+
+    If micro_image_dataset is True, use exactly 1 image for train and 1 (different)
+    image for val, skipping the rest.
     """
 
     def __init__(
@@ -120,11 +123,13 @@ class ImageCompressionDataModule(LightningDataModule):
         data_dir: str = "./data/PetImages",
         batch_size: int = 4,
         num_workers: int = 4,
+        micro_image_dataset: bool = False,
     ):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.micro_image_dataset = micro_image_dataset
 
     def load_files(self, data_dir):
         dataset = datasets.ImageFolder(root=data_dir)
@@ -139,7 +144,9 @@ class ImageCompressionDataModule(LightningDataModule):
                 T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
                 T.Lambda(lambda img: img.convert("RGB")),
                 T.ToTensor(),
-                T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+                T.Normalize(
+                    mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]
+                ),  # Maps [0,1] -> [-1,1]
             ]
         )
 
@@ -148,26 +155,33 @@ class ImageCompressionDataModule(LightningDataModule):
                 T.Resize((448, 448)),
                 T.Lambda(lambda img: img.convert("RGB")),
                 T.ToTensor(),
-                T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+                T.Normalize(
+                    mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]
+                ),  # Maps [0,1] -> [-1,1]
             ]
         )
 
-        # Create separate datasets with different transforms
         train_full_dataset = self.load_files(self.data_dir)
         train_full_dataset.transform = train_transform
 
         val_full_dataset = self.load_files(self.data_dir)
         val_full_dataset.transform = val_transform
 
-        total_size = len(train_full_dataset)
-        train_size = int(0.9 * total_size)
-        val_size = total_size - train_size
+        if self.micro_image_dataset:
+            total = len(train_full_dataset)
+            if total < 100:
+                raise ValueError("Dataset requires at least 100 images")
+            train_dataset = torch.utils.data.Subset(train_full_dataset, range(100))
+        else:
+            total_size = len(train_full_dataset)
+            train_size = int(0.9 * total_size)
+            val_size = total_size - train_size
 
-        train_dataset, _ = random_split(train_full_dataset, [train_size, val_size])
-        _, val_dataset = random_split(val_full_dataset, [train_size, val_size])
+            train_dataset, _ = random_split(train_full_dataset, [train_size, val_size])
+            _, val_dataset = random_split(val_full_dataset, [train_size, val_size])
+            self.val_dataset = val_dataset
 
         self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
         return self
 
     def train_dataloader(self):
@@ -176,12 +190,20 @@ class ImageCompressionDataModule(LightningDataModule):
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,
         )
 
-    def val_dataloader(self):
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-        )
+    # def val_dataloader(self):
+    #     if hasattr(self, "val_dataset"):
+    #         return DataLoader(
+    #             self.val_dataset,
+    #             batch_size=self.batch_size,
+    #             shuffle=False,
+    #             num_workers=self.num_workers,
+    #             pin_memory=True,
+    #             persistent_workers=True,
+    #             prefetch_factor=4,
+    #         )
+    #     return None

@@ -1,4 +1,3 @@
-import os
 import torch
 import pytorch_lightning as pl
 from PIL import Image
@@ -25,8 +24,10 @@ class ReconstructionCallback(pl.Callback):
             )
             / 255.0
         )
-        img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
-        img = (img - 0.5) / 0.5
+        img = img * 2 - 1  # Convert to [-1, 1] range
+        img = (
+            torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).float()
+        )  # Convert to tensor, shape: (1, 3, H, W)
         return img
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -46,7 +47,7 @@ class ReconstructionCallback(pl.Callback):
 
                 if not self.input_logged:
                     input_img = self.image.squeeze().cpu().permute(1, 2, 0).numpy()
-                    input_img = ((input_img + 1) * 127.5).clip(0, 255).astype(np.uint8)
+                    input_img = (input_img * 255).clip(0, 255).astype(np.uint8)
                     log_dict["reconstruction/input"] = wandb.Image(
                         input_img, caption="Original"
                     )
