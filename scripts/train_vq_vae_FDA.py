@@ -57,6 +57,14 @@ model = VQVAE(
 
 reconstruction_callback = ReconstructionCallback(
     input_image_path="images/compress_test.png",
+    log_every_n_steps=100,
+)
+
+save_callback = ModelCheckpoint(
+    monitor="train_loss",
+    dirpath="./checkpoints",
+    filename="vq_vae_fda_model_final",
+    save_top_k=1,
 )
 
 logger = WandbLogger(
@@ -73,10 +81,8 @@ trainer = Trainer(
     precision="bf16-mixed",
     accelerator="auto",
     devices="auto",
-    callbacks=[reconstruction_callback],
+    callbacks=[reconstruction_callback, save_callback],
     logger=logger,
 )
-
-logger.watch(model, log="all", log_freq=10)
 
 trainer.fit(model, datamodule=data_module)

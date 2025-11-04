@@ -171,7 +171,7 @@ class ImageCompressionDataModule(LightningDataModule):
             total = len(train_full_dataset)
             if total < 100:
                 raise ValueError("Dataset requires at least 100 images")
-            train_dataset = torch.utils.data.Subset(train_full_dataset, range(100))
+            train_dataset = torch.utils.data.Subset(train_full_dataset, range(50))
         else:
             total_size = len(train_full_dataset)
             train_size = int(0.9 * total_size)
@@ -195,15 +195,21 @@ class ImageCompressionDataModule(LightningDataModule):
             prefetch_factor=4,
         )
 
-    # def val_dataloader(self):
-    #     if hasattr(self, "val_dataset"):
-    #         return DataLoader(
-    #             self.val_dataset,
-    #             batch_size=self.batch_size,
-    #             shuffle=False,
-    #             num_workers=self.num_workers,
-    #             pin_memory=True,
-    #             persistent_workers=True,
-    #             prefetch_factor=4,
-    #         )
-    #     return None
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,
+        )
+
+
+def main() -> None:
+    pass
+
+
+if __name__ == "__main__":
+    main()

@@ -42,14 +42,14 @@ print(Fore.BLUE + "loading model..." + Fore.RESET)
 
 
 model = VQVAE(
-    h_dim=56,
+    h_dim=112,
     res_h_dim=128,
-    n_res_layers=5,
-    n_embeddings=2056,
+    n_res_layers=3,
+    n_embeddings=2056 * 2,
     embedding_dim=1,
     beta=0.25,
     lr=1e-3,
-    num_downsamples=3,
+    num_downsamples=2,
     initial_channels=128,
 )
 
@@ -63,11 +63,6 @@ checkpoint_callback = ModelCheckpoint(
     mode="min",
 )
 
-early_stopping = EarlyStopping(
-    monitor="val_loss",
-    patience=15,
-    mode="min",
-)
 
 reconstruction_callback = ReconstructionCallback(
     input_image_path="images/compress_test.png",
@@ -87,8 +82,9 @@ trainer = Trainer(
     precision="bf16-mixed",
     accelerator="auto",
     devices="auto",
-    callbacks=[checkpoint_callback, early_stopping, reconstruction_callback],
+    callbacks=[checkpoint_callback, reconstruction_callback],
     logger=logger,
+    val_check_interval=0.5,
 )
 
 logger.watch(model, log="all", log_freq=25)
