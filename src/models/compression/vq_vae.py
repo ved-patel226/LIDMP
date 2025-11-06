@@ -279,7 +279,7 @@ class VQVAE(pl.LightningModule):
         self.lambda_lpips = lambda_lpips
         self.lambda_recon = lambda_recon
 
-        # self.criterion = StructuralSimilarityIndexMeasure(data_range=1.0)
+        self.criterion = nn.L1Loss()
         self.lpips_loss = lpips.LPIPS(net="squeeze")
 
         for param in self.lpips_loss.parameters():
@@ -301,13 +301,17 @@ class VQVAE(pl.LightningModule):
 
     def _calculate_loss(self, x_hat, x, embedding_loss, perplexity, log_name="train"):
         lpips_loss_val = self.lpips_loss(x_hat, x).mean()
+        recon_loss = self.criterion(x_hat, x)
 
-        loss = lpips_loss_val + embedding_loss
+        loss = lpips_loss_val + embedding_loss + recon_loss
 
-        self.log(f"{log_name}_loss", loss, prog_bar=True)
         opt = self.optimizers() if hasattr(self, "optimizers") else None
         lr = opt.param_groups[0]["lr"]
         self.log(f"lr", lr, prog_bar=True)
+
+        self.log(f"{log_name}_recon_loss", recon_loss)
+        self.log(f"{log_name}_lpips_loss", lpips_loss_val)
+        self.log(f"{log_name}_loss", loss, prog_bar=True)
         self.log(f"{log_name}_embedding_loss", embedding_loss)
         self.log(f"{log_name}_perplexity", perplexity)
         return loss
@@ -367,15 +371,15 @@ class VQVAE(pl.LightningModule):
 
 def main() -> None:
     model = VQVAE(
-        h_dim=112,
-        res_h_dim=128,
-        n_res_layers=3,
-        n_embeddings=2056,
-        embedding_dim=1,
+        h_dim=56,
+        res_h_dim=256,
+        n_res_layers=5,
+        n_embeddings=1024,
+        embedding_dim=32,
         beta=0.25,
         lr=1e-3,
-        num_downsamples=2,
-        initial_channels=128,
+        num_downsamples=3,
+        initial_channels=192,
         device="cpu",
     ).to("cpu")
 

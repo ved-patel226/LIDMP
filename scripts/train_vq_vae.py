@@ -42,18 +42,18 @@ print(Fore.BLUE + "loading model..." + Fore.RESET)
 
 
 model = VQVAE(
-    h_dim=112,
-    res_h_dim=128,
-    n_res_layers=3,
-    n_embeddings=2056 * 2,
-    embedding_dim=1,
+    h_dim=56,
+    res_h_dim=256,
+    n_res_layers=5,
+    n_embeddings=1024,
+    embedding_dim=32,
     beta=0.25,
     lr=1e-3,
-    num_downsamples=2,
-    initial_channels=128,
+    num_downsamples=3,
+    initial_channels=192,
 )
 
-# model = VQVAE.load_from_checkpoint("checkpoints/vq_vae_model_best.ckpt")
+# model = VQVAE.load_from_checkpoint("./checkpoints/vq_vae_model_best-v8.ckpt")
 
 checkpoint_callback = ModelCheckpoint(
     monitor="val_loss",
