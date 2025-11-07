@@ -280,7 +280,7 @@ class VQVAE(pl.LightningModule):
         self.lambda_recon = lambda_recon
 
         self.criterion = nn.L1Loss()
-        self.lpips_loss = lpips.LPIPS(net="squeeze")
+        self.lpips_loss = lpips.LPIPS(net="vgg")
 
         for param in self.lpips_loss.parameters():
             param.requires_grad = False

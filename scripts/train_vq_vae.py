@@ -50,7 +50,7 @@ model = VQVAE(
     beta=0.25,
     lr=1e-3,
     num_downsamples=3,
-    initial_channels=192,
+    initial_channels=128,
 )
 
 # model = VQVAE.load_from_checkpoint("./checkpoints/vq_vae_model_best-v8.ckpt")
