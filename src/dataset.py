@@ -139,9 +139,6 @@ class ImageCompressionDataModule(LightningDataModule):
         train_transform = T.Compose(
             [
                 T.Resize((448, 448)),
-                T.RandomHorizontalFlip(),
-                T.RandomRotation(10),
-                T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
                 T.Lambda(lambda img: img.convert("RGB")),
                 T.ToTensor(),
                 T.Normalize(

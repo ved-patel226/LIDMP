@@ -4,3 +4,4 @@ lightning_logs
 wandb
 checkpoints
 images
+src/ipynb/ww-img
