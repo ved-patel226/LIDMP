@@ -9,9 +9,11 @@ from colorama import Fore, init
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.strategies import DeepSpeedStrategy
-
+from pytorch_lightning.strategies import FSDPStrategy
 from pytorch_lightning import seed_everything
+from torch.distributed.fsdp.wrap import ModuleWrapPolicy
+from torch.distributed.fsdp import CPUOffload, BackwardPrefetch, ShardingStrategy
+
 
 seed_everything(1024)
 
@@ -32,7 +34,7 @@ print(Fore.BLUE + "loading dataset..." + Fore.RESET)
 
 data_module = ImageCompressionDataModule(
     data_dir="./data/PetImages",
-    batch_size=1,
+    batch_size=2,
 )
 
 data_module = data_module.setup()
@@ -43,9 +45,9 @@ print(Fore.BLUE + "loading model..." + Fore.RESET)
 
 
 model = VQVAE(
-    h_dim=56,
     res_h_dim=256,
-    n_res_layers=3,
+    h_dim=256,
+    n_res_layers=5,
     n_embeddings=512 * 2,
     embedding_dim=16,
     beta=0.25,
@@ -78,37 +80,15 @@ print(Fore.BLUE + "model loaded successfully\n" + Fore.RESET)
 
 print(Fore.BLUE + "starting training..." + Fore.RESET)
 
-# DeepSpeed configuration with CPU offloading for maximum memory efficiency
-deepspeed_config = {
-    "zero_optimization": {
-        "stage": 3,  # ZeRO Stage 3 - offload parameters, gradients, and optimizer states
-        "offload_optimizer": {"device": "cpu", "pin_memory": True},
-        "offload_param": {"device": "cpu", "pin_memory": True},
-        "overlap_comm": True,
-        "contiguous_gradients": True,
-        "sub_group_size": 1e9,
-        "reduce_bucket_size": 5e8,
-        "stage3_prefetch_bucket_size": 5e8,
-        "stage3_param_persistence_threshold": 1e6,
-        "stage3_max_live_parameters": 1e9,
-        "stage3_max_reuse_distance": 1e9,
-        "stage3_gather_16bit_weights_on_model_save": True,
-    },
-    "gradient_clipping": 1.0,
-    "wall_clock_breakdown": False,
-}
-
 trainer = Trainer(
     max_epochs=-1,
     accelerator="gpu",
     devices=1,
-    strategy=DeepSpeedStrategy(config=deepspeed_config),
     precision="bf16-mixed",
     callbacks=[checkpoint_callback, reconstruction_callback],
     logger=logger,
     val_check_interval=0.5,
-    enable_model_summary=False,  # Disable to avoid DeepSpeed compatibility issues
-    accumulate_grad_batches=2,  # Accumulate gradients for memory efficiency
+    gradient_clip_val=1.0,
 )
 
 
