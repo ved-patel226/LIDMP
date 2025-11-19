@@ -14,6 +14,12 @@ class ChannelAttention(nn.Module):
             nn.Conv2d(in_planes // 16, in_planes, 1, bias=False),
         )
         self.sigmoid = nn.Sigmoid()
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.fc:
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
 
     def forward(self, x):
         avg_out = self.fc(self.avg_pool(x))
@@ -28,6 +34,10 @@ class SpatialAttention(nn.Module):
 
         self.conv1 = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
         self.sigmoid = nn.Sigmoid()
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.kaiming_normal_(self.conv1.weight, mode="fan_in", nonlinearity="relu")
 
     def forward(self, x):
         avg_out = torch.mean(x, dim=1, keepdim=True)

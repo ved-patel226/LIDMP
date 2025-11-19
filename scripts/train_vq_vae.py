@@ -47,13 +47,13 @@ print(Fore.BLUE + "loading model..." + Fore.RESET)
 model = VQVAE(
     res_h_dim=256,
     h_dim=256,
-    n_res_layers=5,
+    n_res_layers=3,
     n_embeddings=512 * 2,
     embedding_dim=16,
     beta=0.25,
     lr=1e-3,
     num_downsamples=3,
-    initial_channels=128,
+    initial_channels=224,
 )
 
 # model = VQVAE.load_from_checkpoint("./checkpoints/vq_vae_model_best-v13.ckpt")

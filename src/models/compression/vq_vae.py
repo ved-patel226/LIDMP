@@ -3,7 +3,7 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import lpips
 import torch.nn.init as init
-from vector_quantize_pytorch import VectorQuantize
+from vector_quantize_pytorch import VectorQuantize, ResidualVQ
 
 try:
     from .residual import ResidualStack
@@ -54,12 +54,12 @@ class Encoder(nn.Module):
             )
             current_channels = next_channels
 
-        self.residual_stack = ResidualStack(
-            in_dim=current_channels,
-            h_dim=current_channels,
-            res_h_dim=res_h_dim,
-            n_res_layers=n_res_layers,
-        )
+        # self.residual_stack = ResidualStack(
+        #     in_dim=current_channels,
+        #     h_dim=current_channels,
+        #     res_h_dim=res_h_dim,
+        #     n_res_layers=n_res_layers,
+        # )
 
         self.compress = nn.Sequential(
             nn.Conv2d(
@@ -88,22 +88,22 @@ class Encoder(nn.Module):
             nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(in_channels),
             nn.LeakyReLU(),
-            CBAM(in_channels),
+            # CBAM(in_channels),
             # Pre-processing block 2
             nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(in_channels),
             nn.LeakyReLU(),
-            CBAM(in_channels),
+            # CBAM(in_channels),
             # Downsample
             nn.Conv2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.LeakyReLU(),
             # Post-processing block 1
-            CBAM(out_channels),
+            # CBAM(out_channels),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.LeakyReLU(),
-            CBAM(out_channels),
+            # CBAM(out_channels),
             # Post-processing block 2
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(out_channels),
@@ -117,7 +117,7 @@ class Encoder(nn.Module):
         for downsample in self.downsample_blocks:
             x = downsample(x)
 
-        x = self.residual_stack(x)
+        # x = self.residual_stack(x)
         x = self.compress(x)
         return x
 
@@ -194,23 +194,23 @@ class Decoder(nn.Module):
             nn.Conv2d(in_channels, in_channels, 3, 1, 1),
             nn.BatchNorm2d(in_channels),
             nn.LeakyReLU(),
-            CBAM(in_channels),
+            # CBAM(in_channels),
             # Pre-processing block 2
             nn.Conv2d(in_channels, in_channels, 3, 1, 1),
             nn.BatchNorm2d(in_channels),
             nn.LeakyReLU(),
-            CBAM(in_channels),
+            # CBAM(in_channels),
             # Upsample
             nn.Conv2d(in_channels, out_channels * (upscale_factor**2), 3, 1, 1),
             nn.BatchNorm2d(out_channels * (upscale_factor**2)),
             nn.LeakyReLU(),
             nn.PixelShuffle(upscale_factor),
             # Post-processing block 1
-            CBAM(out_channels),
+            # CBAM(out_channels),
             nn.Conv2d(out_channels, out_channels, 3, 1, 1),
             nn.BatchNorm2d(out_channels),
             nn.LeakyReLU(),
-            CBAM(out_channels),
+            # CBAM(out_channels),
             # Post-processing block 2
             nn.Conv2d(out_channels, out_channels, 3, 1, 1),
             nn.BatchNorm2d(out_channels),
@@ -241,8 +241,6 @@ class VQVAE(pl.LightningModule):
     - embedding_dim : dimension of each embedding vector
     - beta : commitment loss weight
     - lr : learning rate for optimizer
-    - lambda_lpips : weight for LPIPS loss
-    - lambda_recon : weight for reconstruction loss
     """
 
     def __init__(
@@ -254,8 +252,6 @@ class VQVAE(pl.LightningModule):
         embedding_dim,
         beta=1.0,
         lr=1e-3,
-        lambda_lpips=1.0,
-        lambda_recon=1.0,
         num_downsamples=3,
         initial_channels=64,
     ):
@@ -270,6 +266,23 @@ class VQVAE(pl.LightningModule):
             initial_channels=initial_channels,
         )
 
+        # self.vector_quantization = VectorQuantize(
+        #     codebook_size=n_embeddings,
+        #     dim=embedding_dim,
+        #     separate_codebook_per_head=True,
+        #     decay=0.8,
+        #     eps=1e-5,
+        #     commitment_weight=beta,
+        #     use_cosine_sim=True,
+        #     threshold_ema_dead_code=2,
+        #     sample_codebook_temp=0.0,
+        #     orthogonal_reg_weight=0.1,
+        #     stochastic_sample_codes=True,
+        #     kmeans_init=True,
+        #     kmeans_iters=20,
+        #     layernorm_after_project_in=True,
+        # )
+
         self.vector_quantization = VectorQuantize(
             codebook_size=n_embeddings,
             dim=embedding_dim,
@@ -277,9 +290,21 @@ class VQVAE(pl.LightningModule):
             eps=1e-5,
             commitment_weight=beta,
             use_cosine_sim=True,
-            threshold_ema_dead_code=2,
-            sample_codebook_temp=0.0,
+            threshold_ema_dead_code=2,  # Replace unused codes
+            sample_codebook_temp=0.0,  # Enable stochastic sampling during training
         )
+
+        # self.vector_quantization = ResidualVQ(
+        #     num_quantizers=2,
+        #     codebook_size=n_embeddings,
+        #     dim=embedding_dim,
+        #     decay=0.99,
+        #     eps=1e-5,
+        #     commitment_weight=beta,
+        #     use_cosine_sim=True,
+        #     threshold_ema_dead_code=2,
+        #     sample_codebook_temp=0.0,
+        # )
 
         self.decoder = Decoder(
             embedding_dim,
@@ -290,8 +315,6 @@ class VQVAE(pl.LightningModule):
         )
 
         self.lr = lr
-        self.lambda_lpips = lambda_lpips
-        self.lambda_recon = lambda_recon
 
         self.lpips_loss = lpips.LPIPS(net="vgg")
 
@@ -320,7 +343,7 @@ class VQVAE(pl.LightningModule):
         # Normalize LPIPS loss to prevent gradient explosion
         lpips_loss_val = self.lpips_loss(x_hat, x).mean()
 
-        loss = self.lambda_lpips * lpips_loss_val + embedding_loss
+        loss = lpips_loss_val + embedding_loss
 
         opt = self.optimizers() if hasattr(self, "optimizers") else None
         lr = opt.param_groups[0]["lr"] if opt else self.lr
@@ -376,27 +399,27 @@ class VQVAE(pl.LightningModule):
 def main() -> None:
     from torchinfo import summary
 
-    device = "cuda"
+    device = "cpu"
 
     model = VQVAE(
-        res_h_dim=512,
+        res_h_dim=256,
         h_dim=256,
-        n_res_layers=5,
+        n_res_layers=3,
         n_embeddings=512 * 2,
         embedding_dim=16,
         beta=0.25,
         lr=1e-3,
         num_downsamples=3,
-        initial_channels=192,
+        initial_channels=224,
     ).to(device)
 
     summary(model, input_size=(1, 3, 448, 448), device=device)
 
-    x = torch.randn(1, 3, 448, 448).to(device)
-    with torch.no_grad():
-        commitment_loss, x_hat, indices = model(x)
-    print("Input shape:", x.shape)
-    print("Reconstructed shape:", x_hat.shape)
+    # x = torch.randn(1, 3, 448, 448).to(device)
+    # with torch.no_grad():
+    #     commitment_loss, x_hat, indices = model(x)
+    # print("Input shape:", x.shape)
+    # print("Reconstructed shape:", x_hat.shape)
 
 
 if __name__ == "__main__":

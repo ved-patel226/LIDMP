@@ -101,7 +101,8 @@ class ResidualStack(nn.Module):
                             #     use_chunked=True,
                             #     chunk_size=chunk_size,
                             # ),
-                            CBAM(in_dim),
+                            # CBAM(in_dim),
+                            CoordinateAttention(in_dim, in_dim),
                             ResidualLayer(in_dim, h_dim, res_h_dim),
                         ]
                     )
