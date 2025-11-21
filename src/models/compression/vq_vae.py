@@ -8,9 +8,11 @@ from vector_quantize_pytorch import VectorQuantize, ResidualVQ
 try:
     from .residual import ResidualStack
     from .cbam import CBAM
+    from .transformer import LatentDecoder
 except ImportError:
     from residual import ResidualStack
     from cbam import CBAM
+    from transformer import LatentDecoder
 
 
 class Encoder(nn.Module):
@@ -135,103 +137,6 @@ class Encoder(nn.Module):
                 init.constant_(m.bias, 0)
 
 
-class Decoder(nn.Module):
-    def __init__(
-        self,
-        in_dim,
-        n_res_layers,
-        res_h_dim,
-        out_channels=3,
-        num_upsamples=3,
-        initial_channels=64,
-    ):
-        super().__init__()
-        self.num_upsamples = num_upsamples
-
-        self.expand = nn.Sequential(
-            nn.Conv2d(in_dim, initial_channels // 2, 3, 1, 1),
-            nn.BatchNorm2d(initial_channels // 2),
-            nn.LeakyReLU(),
-            nn.Conv2d(initial_channels // 2, initial_channels, 3, 1, 1),
-            nn.BatchNorm2d(initial_channels),
-            nn.LeakyReLU(),
-        )
-
-        self.upsample_blocks = nn.ModuleList()
-        current_channels = initial_channels
-        for i in range(num_upsamples):
-            next_channels = current_channels // 2
-            self.upsample_blocks.append(
-                self._upsample_block(current_channels, next_channels)
-            )
-            current_channels = next_channels
-
-        self.residual_stack = ResidualStack(
-            in_dim=current_channels,
-            h_dim=current_channels,
-            res_h_dim=res_h_dim,
-            n_res_layers=n_res_layers,
-        )
-
-        self.final = nn.Sequential(
-            nn.Conv2d(current_channels, out_channels, 3, 1, 1), nn.Tanh()
-        )
-
-        # self._init_weights()
-
-    def forward(self, x):
-        x = self.expand(x)
-        for upsample in self.upsample_blocks:
-            x = upsample(x)
-
-        x = self.residual_stack(x)
-        x = self.final(x)
-        return x
-
-    def _upsample_block(self, in_channels, out_channels, upscale_factor=2):
-        return nn.Sequential(
-            # Pre-processing block 1
-            nn.Conv2d(in_channels, in_channels, 3, 1, 1),
-            nn.BatchNorm2d(in_channels),
-            nn.LeakyReLU(),
-            # CBAM(in_channels),
-            # Pre-processing block 2
-            nn.Conv2d(in_channels, in_channels, 3, 1, 1),
-            nn.BatchNorm2d(in_channels),
-            nn.LeakyReLU(),
-            # CBAM(in_channels),
-            # Upsample
-            nn.Conv2d(in_channels, out_channels * (upscale_factor**2), 3, 1, 1),
-            nn.BatchNorm2d(out_channels * (upscale_factor**2)),
-            nn.LeakyReLU(),
-            nn.PixelShuffle(upscale_factor),
-            # Post-processing block 1
-            # CBAM(out_channels),
-            nn.Conv2d(out_channels, out_channels, 3, 1, 1),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(),
-            # CBAM(out_channels),
-            # Post-processing block 2
-            nn.Conv2d(out_channels, out_channels, 3, 1, 1),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(),
-            CBAM(out_channels),
-        )
-
-    def _init_weights(self):
-        """Initialize weights using Kaiming initialization for conv layers"""
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                init.kaiming_normal_(
-                    m.weight, mode="fan_out", nonlinearity="leaky_relu"
-                )
-                if m.bias is not None:
-                    init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                init.constant_(m.weight, 1)
-                init.constant_(m.bias, 0)
-
-
 class VQVAE(pl.LightningModule):
     """
     Inputs:
@@ -306,17 +211,26 @@ class VQVAE(pl.LightningModule):
         #     sample_codebook_temp=0.0,
         # )
 
-        self.decoder = Decoder(
-            embedding_dim,
-            n_res_layers,
-            res_h_dim,
-            num_upsamples=num_downsamples,
-            initial_channels=initial_channels,
+        # self.decoder = Decoder(
+        #     embedding_dim,
+        #     n_res_layers,
+        #     res_h_dim,
+        #     num_upsamples=num_downsamples,
+        #     initial_channels=initial_channels,
+        # )
+
+        self.decoder = LatentDecoder(
+            latent_channels=embedding_dim,
+            output_channels=3,
+            embed_dim=h_dim,
+            n_heads=4,
+            n_layers=3,
+            patch_size=1,
         )
 
         self.lr = lr
 
-        self.lpips_loss = lpips.LPIPS(net="vgg")
+        self.lpips_loss = lpips.LPIPS(net="vgg").to(self.device)
 
         for param in self.lpips_loss.parameters():
             param.requires_grad = False
@@ -406,11 +320,11 @@ def main() -> None:
         h_dim=256,
         n_res_layers=3,
         n_embeddings=512 * 2,
-        embedding_dim=16,
+        embedding_dim=64,
         beta=0.25,
         lr=1e-3,
         num_downsamples=3,
-        initial_channels=224,
+        initial_channels=128,
     ).to(device)
 
     summary(model, input_size=(1, 3, 448, 448), device=device)

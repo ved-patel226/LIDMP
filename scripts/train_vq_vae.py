@@ -53,7 +53,7 @@ model = VQVAE(
     beta=0.25,
     lr=1e-3,
     num_downsamples=3,
-    initial_channels=224,
+    initial_channels=128,
 )
 
 # model = VQVAE.load_from_checkpoint("./checkpoints/vq_vae_model_best-v13.ckpt")
@@ -67,9 +67,9 @@ checkpoint_callback = ModelCheckpoint(
 )
 
 
-reconstruction_callback = ReconstructionCallback(
-    input_image_path="images/compress_test.png",
-)
+# reconstruction_callback = ReconstructionCallback(
+#     input_image_path="images/compress_test.png",
+# )
 
 logger = WandbLogger(
     project="LIMPACT - VQ-VAE",
@@ -85,7 +85,9 @@ trainer = Trainer(
     accelerator="gpu",
     devices=1,
     precision="bf16-mixed",
-    callbacks=[checkpoint_callback, reconstruction_callback],
+    callbacks=[
+        checkpoint_callback,
+    ],
     logger=logger,
     val_check_interval=0.5,
     gradient_clip_val=1.0,
