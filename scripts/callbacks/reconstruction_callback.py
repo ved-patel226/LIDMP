@@ -31,7 +31,7 @@ class ReconstructionCallback(pl.Callback):
         if global_step % self.log_every_n_steps == 0:
             pl_module.eval()
             with torch.no_grad():
-                _, output, _ = pl_module(self.image.to(pl_module.device))
+                _, output, _, _ = pl_module(self.image.to(pl_module.device))
                 output = output.squeeze().cpu().permute(1, 2, 0).numpy()
                 output = ((output + 1) * 127.5).clip(0, 255).astype(np.uint8)
 

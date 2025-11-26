@@ -6,187 +6,45 @@ import torch.nn.init as init
 from vector_quantize_pytorch import VectorQuantize, ResidualVQ
 
 try:
-    from .residual import ResidualStack
-    from .cbam import CBAM
-    from .transformer import LatentDecoder
+    from .transformer import LatentDecoder, LatentEncoder
 except ImportError:
-    from residual import ResidualStack
-    from cbam import CBAM
-    from transformer import LatentDecoder
-
-
-class Encoder(nn.Module):
-    """
-    Dynamic encoder with configurable downsampling stages and residual stack.
-
-    Inputs:
-    - in_dim : the input dimension (channels)
-    - res_h_dim : the hidden dimension of the residual block
-    - n_res_layers : number of residual layers to stack
-    - embedding_dim : output channels for quantization
-    - num_downsamples : number of downsampling blocks (default: 3)
-    - initial_channels : number of channels after initial conv (default: 64)
-    """
-
-    def __init__(
-        self,
-        in_dim,
-        n_res_layers,
-        res_h_dim,
-        embedding_dim,
-        num_downsamples=3,
-        initial_channels=64,
-    ):
-        super(Encoder, self).__init__()
-
-        self.num_downsamples = num_downsamples
-
-        self.initial = nn.Sequential(
-            nn.Conv2d(in_dim, initial_channels, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(initial_channels),
-            nn.LeakyReLU(),
-        )
-
-        self.downsample_blocks = nn.ModuleList()
-        current_channels = initial_channels
-        for i in range(num_downsamples):
-            next_channels = max(initial_channels // (2 ** (i + 1)), embedding_dim)
-            self.downsample_blocks.append(
-                self._downsample_block(current_channels, next_channels)
-            )
-            current_channels = next_channels
-
-        # self.residual_stack = ResidualStack(
-        #     in_dim=current_channels,
-        #     h_dim=current_channels,
-        #     res_h_dim=res_h_dim,
-        #     n_res_layers=n_res_layers,
-        # )
-
-        self.compress = nn.Sequential(
-            nn.Conv2d(
-                current_channels,
-                max(current_channels // 2, embedding_dim),
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            ),
-            nn.BatchNorm2d(max(current_channels // 2, embedding_dim)),
-            nn.LeakyReLU(),
-            nn.Conv2d(
-                max(current_channels // 2, embedding_dim),
-                embedding_dim,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            ),
-        )
-
-        # self._init_weights()
-
-    def _downsample_block(self, in_channels, out_channels):
-        return nn.Sequential(
-            # Pre-processing block 1
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(in_channels),
-            nn.LeakyReLU(),
-            # CBAM(in_channels),
-            # Pre-processing block 2
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(in_channels),
-            nn.LeakyReLU(),
-            # CBAM(in_channels),
-            # Downsample
-            nn.Conv2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(),
-            # Post-processing block 1
-            # CBAM(out_channels),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(),
-            # CBAM(out_channels),
-            # Post-processing block 2
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(),
-            CBAM(out_channels),
-        )
-
-    def forward(self, x):
-        x = self.initial(x)
-
-        for downsample in self.downsample_blocks:
-            x = downsample(x)
-
-        # x = self.residual_stack(x)
-        x = self.compress(x)
-        return x
-
-    def _init_weights(self):
-        """Initialize weights using Kaiming initialization for conv layers"""
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                init.kaiming_normal_(
-                    m.weight, mode="fan_out", nonlinearity="leaky_relu"
-                )
-                if m.bias is not None:
-                    init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                init.constant_(m.weight, 1)
-                init.constant_(m.bias, 0)
+    from transformer import LatentDecoder, LatentEncoder
 
 
 class VQVAE(pl.LightningModule):
-    """
-    Inputs:
-    - res_h_dim : the hidden dimension of the residual block
-    - n_res_layers : number of residual layers to stack
-    - n_embeddings : number of embeddings in the codebook
-    - embedding_dim : dimension of each embedding vector
-    - beta : commitment loss weight
-    - lr : learning rate for optimizer
-    """
-
     def __init__(
         self,
-        res_h_dim,
         h_dim,
-        n_res_layers,
         n_embeddings,
         embedding_dim,
         beta=1.0,
         lr=1e-3,
-        num_downsamples=3,
-        initial_channels=64,
+        n_heads=4,
+        n_layers=3,
+        patch_size=1,
+        freeze_encoder=False,
+        freeze_decoder=False,
+        freeze_quantizer=False,
+        gradient_descent_quantizer=False,
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.encoder = Encoder(
-            3,
-            n_res_layers,
-            res_h_dim,
-            embedding_dim=embedding_dim,
-            num_downsamples=num_downsamples,
-            initial_channels=initial_channels,
-        )
 
-        # self.vector_quantization = VectorQuantize(
-        #     codebook_size=n_embeddings,
-        #     dim=embedding_dim,
-        #     separate_codebook_per_head=True,
-        #     decay=0.8,
-        #     eps=1e-5,
-        #     commitment_weight=beta,
-        #     use_cosine_sim=True,
-        #     threshold_ema_dead_code=2,
-        #     sample_codebook_temp=0.0,
-        #     orthogonal_reg_weight=0.1,
-        #     stochastic_sample_codes=True,
-        #     kmeans_init=True,
-        #     kmeans_iters=20,
-        #     layernorm_after_project_in=True,
-        # )
+        self.freeze_encoder = freeze_encoder
+        self.freeze_decoder = freeze_decoder
+        self.freeze_quantizer = freeze_quantizer
+        super().__init__()
+
+        self.save_hyperparameters()
+
+        self.encoder = LatentEncoder(
+            input_channels=3,
+            latent_channels=embedding_dim,
+            embed_dim=h_dim,
+            n_heads=n_heads,
+            n_layers=n_layers,
+            patch_size=patch_size,
+        )
 
         self.vector_quantization = VectorQuantize(
             codebook_size=n_embeddings,
@@ -194,48 +52,73 @@ class VQVAE(pl.LightningModule):
             decay=0.99,
             eps=1e-5,
             commitment_weight=beta,
-            use_cosine_sim=True,
-            threshold_ema_dead_code=2,  # Replace unused codes
-            sample_codebook_temp=0.0,  # Enable stochastic sampling during training
+            learnable_codebook=True if gradient_descent_quantizer else False,
+            ema_update=False if gradient_descent_quantizer else True,
         )
-
-        # self.vector_quantization = ResidualVQ(
-        #     num_quantizers=2,
-        #     codebook_size=n_embeddings,
-        #     dim=embedding_dim,
-        #     decay=0.99,
-        #     eps=1e-5,
-        #     commitment_weight=beta,
-        #     use_cosine_sim=True,
-        #     threshold_ema_dead_code=2,
-        #     sample_codebook_temp=0.0,
-        # )
-
-        # self.decoder = Decoder(
-        #     embedding_dim,
-        #     n_res_layers,
-        #     res_h_dim,
-        #     num_upsamples=num_downsamples,
-        #     initial_channels=initial_channels,
-        # )
 
         self.decoder = LatentDecoder(
             latent_channels=embedding_dim,
             output_channels=3,
             embed_dim=h_dim,
-            n_heads=4,
-            n_layers=3,
-            patch_size=1,
+            n_heads=n_heads,
+            n_layers=n_layers,
+            patch_size=patch_size,
         )
 
         self.lr = lr
 
         self.lpips_loss = lpips.LPIPS(net="vgg").to(self.device)
+        self.n_embeddings = n_embeddings
 
         for param in self.lpips_loss.parameters():
             param.requires_grad = False
 
+        self._apply_freezing()
+
         print("VQVAE __init__ complete.")
+
+    def _apply_freezing(self):
+        """Freeze components based on initialization flags"""
+        if self.freeze_encoder:
+            for param in self.encoder.parameters():
+                param.requires_grad = False
+            print("Encoder frozen")
+
+        if self.freeze_decoder:
+            for param in self.decoder.parameters():
+                param.requires_grad = False
+            print("Decoder frozen")
+
+        if self.freeze_quantizer:
+            for param in self.vector_quantization.parameters():
+                param.requires_grad = False
+            print("Quantizer frozen")
+
+    def _calculate_vq_perplexity(self, codebook_indices, num_codebook_entries):
+        """
+        Calculate perplexity of VQ codebook usage.
+
+        Args:
+            codebook_indices: Tensor of shape (batch_size, ...) containing codebook indices
+            num_codebook_entries: K, the size of the codebook
+
+        Returns:
+            perplexity: scalar tensor
+        """
+        flat_indices = codebook_indices.reshape(-1)
+
+        unique, counts = torch.unique(flat_indices, return_counts=True)
+
+        full_counts = torch.zeros(num_codebook_entries, device=codebook_indices.device)
+        full_counts[unique] = counts.float()
+        probs = full_counts / full_counts.sum()
+
+        probs = probs[probs > 0]
+
+        entropy = -(probs * torch.log2(probs)).sum()
+        perplexity = 2**entropy
+
+        return perplexity
 
     def forward(self, x):
         z_e = self.encoder(x)
@@ -243,16 +126,15 @@ class VQVAE(pl.LightningModule):
         z_flat = z_e.permute(0, 2, 3, 1).reshape(b, h * w, c)
         quantized, indices, commitment_loss = self.vector_quantization(z_flat)
 
-        # Reshape quantized embeddings back to spatial format for Decoder
-        quantized_spatial = quantized.view(b, h, w, c).permute(
-            0, 3, 1, 2
-        )  # [B, C, H, W]
+        perplexity = self._calculate_vq_perplexity(indices, self.n_embeddings)
+
+        quantized_spatial = quantized.view(b, h, w, c).permute(0, 3, 1, 2)
         x_hat = self.decoder(quantized_spatial)
 
-        return commitment_loss.mean(), x_hat, indices
+        return commitment_loss.mean(), x_hat, indices, perplexity
 
     def _calculate_loss(
-        self, x_hat, x, embedding_loss, perplexity=None, log_name="train"
+        self, x_hat, x, embedding_loss, perplexity=None, log_name="train", indices=None
     ):
         # Normalize LPIPS loss to prevent gradient explosion
         lpips_loss_val = self.lpips_loss(x_hat, x).mean()
@@ -269,35 +151,53 @@ class VQVAE(pl.LightningModule):
 
         if perplexity is not None:
             self.log(f"{log_name}_perplexity", perplexity)
+        if indices is not None:
+            unique_codes = len(torch.unique(indices))
+            self.log(f"{log_name}_unique_codes", unique_codes)
+            self.log(
+                f"{log_name}_codebook_utilization",
+                unique_codes / self.hparams.n_embeddings,
+            )
         return loss
 
     def training_step(self, batch, _batch_idx):
         x, _ = batch
-        embedding_loss, x_hat, _ = self(x)
+        embedding_loss, x_hat, indices, perplexity = self(x)
 
-        loss = self._calculate_loss(x_hat, x, embedding_loss, log_name="train")
-
+        loss = self._calculate_loss(
+            x_hat, x, embedding_loss, perplexity, log_name="train", indices=indices
+        )
         return loss
 
     def validation_step(self, batch, _batch_idx):
         x, _ = batch
-        embedding_loss, x_hat, _ = self(x)
+        embedding_loss, x_hat, indices, perplexity = self(x)
 
-        loss = self._calculate_loss(x_hat, x, embedding_loss, log_name="val")
+        loss = self._calculate_loss(
+            x_hat, x, embedding_loss, perplexity, log_name="val", indices=indices
+        )
 
         return loss
 
     def configure_optimizers(self):
+        params_to_optimize = []
+
+        if not self.freeze_encoder:
+            params_to_optimize.append({"params": self.encoder.parameters()})
+        if not self.freeze_decoder:
+            params_to_optimize.append({"params": self.decoder.parameters()})
+        if not self.freeze_quantizer:
+            params_to_optimize.append({"params": self.vector_quantization.parameters()})
+
         optimizer = torch.optim.AdamW(
-            [
-                {"params": self.encoder.parameters()},
-                {"params": self.decoder.parameters()},
-                {"params": self.vector_quantization.parameters()},
-            ],
+            params_to_optimize,
             lr=self.lr,
+            weight_decay=1e-5,
+            betas=(0.9, 0.95),
         )
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6
+
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=5, T_mult=1, eta_min=1e-6
         )
         return {
             "optimizer": optimizer,
@@ -316,24 +216,27 @@ def main() -> None:
     device = "cpu"
 
     model = VQVAE(
-        res_h_dim=256,
         h_dim=256,
-        n_res_layers=3,
         n_embeddings=512 * 2,
-        embedding_dim=64,
+        embedding_dim=16,
         beta=0.25,
         lr=1e-3,
-        num_downsamples=3,
-        initial_channels=128,
+        #
+        #
+        #
+        n_heads=4,
+        n_layers=6,
+        patch_size=4,
     ).to(device)
 
     summary(model, input_size=(1, 3, 448, 448), device=device)
 
-    # x = torch.randn(1, 3, 448, 448).to(device)
-    # with torch.no_grad():
-    #     commitment_loss, x_hat, indices = model(x)
-    # print("Input shape:", x.shape)
-    # print("Reconstructed shape:", x_hat.shape)
+    x = torch.randn(1, 3, 448, 448).to(device)
+    with torch.no_grad():
+        commitment_loss, x_hat, indices, perplexity = model(x)
+    print("Input shape:", x.shape)
+    print("Reconstructed shape:", x_hat.shape)
+    print(perplexity)
 
 
 if __name__ == "__main__":
