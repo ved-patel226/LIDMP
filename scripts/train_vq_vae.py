@@ -18,7 +18,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.dataset import ImageCompressionDataModule
 from src.models.compression.vq_vae import VQVAE
 from callbacks.reconstruction_callback import ReconstructionCallback
-from pytorch_lightning.strategies import DeepSpeedStrategy
 
 print(Fore.GREEN + text2art("LIDMP") + Fore.RESET)
 print(Fore.GREEN + "Ved Patel - All Rights Reserved\n" + Fore.RESET)
@@ -46,7 +45,7 @@ model = VQVAE(
     freeze_quantizer=False,  # Train quantizer only
     gradient_descent_quantizer=True,
     load_params=["encoder", "decoder"],
-    load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v2.ckpt",
+    load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v4.ckpt",
 )
 
 checkpoint_callback_stage1 = ModelCheckpoint(

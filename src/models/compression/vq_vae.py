@@ -3,7 +3,14 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import lpips
 import torch.nn.init as init
-from vector_quantize_pytorch import VectorQuantize, ResidualVQ, ResidualFSQ, ResidualLFQ
+from vector_quantize_pytorch import (
+    VectorQuantize,
+    ResidualVQ,
+    ResidualFSQ,
+    ResidualLFQ,
+    FSQ,
+    LFQ,
+)
 from deepspeed.ops.adam import DeepSpeedCPUAdam
 
 try:
@@ -49,36 +56,18 @@ class VQVAE(pl.LightningModule):
             patch_size=patch_size,
         )
 
-        # self.vector_quantization = VectorQuantize(
-        #     codebook_size=n_embeddings,
+        # self.vector_quantization = ResidualLFQ(
+        #     codebook_size=1024,
         #     dim=embedding_dim,
-        #     decay=0.99,
-        #     eps=1e-5,
-        #     commitment_weight=beta,
-        #     learnable_codebook=True if gradient_descent_quantizer else False,
-        #     ema_update=False if gradient_descent_quantizer else True,
+        #     num_quantizers=4,
+        #     commitment_loss_weight=1.0,
+        #     entropy_loss_weight=0.01,  # Helps with codebook utilization
         # )
 
-        # self.vector_quantization = ResidualVQ(
-        #     num_quantizers=2,
-        #     codebook_size=n_embeddings // 2,
-        #     dim=embedding_dim,
-        #     commitment_weight=beta,
-        #     learnable_codebook=True if gradient_descent_quantizer else False,
-        #     ema_update=False if gradient_descent_quantizer else True,
-        #     # implicit_neural_codebook=True,
-        #     # mlp_kwargs=dict(
-        #     #     dim_hidden=embedding_dim * 2,
-        #     #     depth=4,
-        #     # ),
-        # )
-
-        self.vector_quantization = ResidualLFQ(
-            codebook_size=1024,
+        self.vector_quantization = LFQ(
+            codebook_size=n_embeddings,
             dim=embedding_dim,
-            num_quantizers=4,
-            commitment_loss_weight=1.0,
-            entropy_loss_weight=0.01,  # Helps with codebook utilization
+            entropy_loss_weight=0.01,
         )
 
         self.decoder = LatentDecoder(
@@ -99,7 +88,9 @@ class VQVAE(pl.LightningModule):
             param.requires_grad = False
 
         self._apply_freezing()
-        self._load_pretrained_components(load_path, load_params)
+
+        if load_params is not None and load_path is not None:
+            self._load_pretrained_components(load_path, load_params)
 
         print("VQVAE __init__ complete.")
 
@@ -191,10 +182,37 @@ class VQVAE(pl.LightningModule):
 
         return commitment_loss.mean(), x_hat, indices, perplexity
 
+    def forward_with_latents(self, latents, spatial_shape=None):
+        """
+        Accept integer codebook indices and decode them.
+
+        Args:
+            latents: integer codebook indices with shape (B, H*W, Q) where Q is num_quantizers
+            spatial_shape: tuple (H, W) for the spatial dimensions. If None, assumes square.
+        """
+        # get_output_from_indices returns (B, N, D) where N = H*W
+        embeddings = self.vector_quantization.get_output_from_indices(latents)
+
+        b, n, d = embeddings.shape
+
+        if spatial_shape is not None:
+            h, w = spatial_shape
+        else:
+            # Assume square spatial dimensions
+            h = w = int(n**0.5)
+
+        assert (
+            h * w == n
+        ), f"Spatial shape {h}x{w}={h*w} doesn't match sequence length {n}"
+
+        # Reshape from (B, H*W, D) to (B, D, H, W) for the decoder
+        embeddings = embeddings.view(b, h, w, d).permute(0, 3, 1, 2)
+
+        return self.decoder(embeddings)
+
     def _calculate_loss(
         self, x_hat, x, embedding_loss, perplexity=None, log_name="train", indices=None
     ):
-        # Normalize LPIPS loss to prevent gradient explosion
         lpips_loss_val = self.lpips_loss(x_hat, x).mean()
 
         loss = lpips_loss_val + embedding_loss
@@ -273,7 +291,7 @@ class VQVAE(pl.LightningModule):
 def main() -> None:
     from torchinfo import summary
 
-    device = "cuda"
+    device = "cpu"
     model = VQVAE(
         h_dim=256,
         n_embeddings=1024,
@@ -287,18 +305,16 @@ def main() -> None:
         freeze_decoder=True,  # Freeze decoder (random initialization)
         freeze_quantizer=False,  # Train quantizer only
         gradient_descent_quantizer=True,
-        load_params=["encoder", "decoder"],
-        load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v2.ckpt",
+        # load_params=["encoder", "decoder"],
+        # load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v2.ckpt",
     )
 
-    summary(model, input_size=(1, 3, 448, 448), device=device)
-
+    model = model.to(device)
     x = torch.randn(1, 3, 448, 448).to(device)
-    with torch.no_grad():
-        commitment_loss, x_hat, indices, perplexity = model(x)
-    print("Input shape:", x.shape)
-    print("Reconstructed shape:", x_hat.shape)
-    print(perplexity)
+
+    _, x_hat, indices, _ = model(x)
+
+    print(indices.shape)
 
 
 if __name__ == "__main__":
