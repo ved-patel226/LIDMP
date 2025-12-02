@@ -3,7 +3,8 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import lpips
 import torch.nn.init as init
-from vector_quantize_pytorch import VectorQuantize, ResidualVQ
+from vector_quantize_pytorch import VectorQuantize, ResidualVQ, ResidualFSQ, ResidualLFQ
+from deepspeed.ops.adam import DeepSpeedCPUAdam
 
 try:
     from .transformer import LatentDecoder, LatentEncoder
@@ -26,6 +27,8 @@ class VQVAE(pl.LightningModule):
         freeze_decoder=False,
         freeze_quantizer=False,
         gradient_descent_quantizer=False,
+        load_params=None,
+        load_path=None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -46,14 +49,36 @@ class VQVAE(pl.LightningModule):
             patch_size=patch_size,
         )
 
-        self.vector_quantization = VectorQuantize(
-            codebook_size=n_embeddings,
+        # self.vector_quantization = VectorQuantize(
+        #     codebook_size=n_embeddings,
+        #     dim=embedding_dim,
+        #     decay=0.99,
+        #     eps=1e-5,
+        #     commitment_weight=beta,
+        #     learnable_codebook=True if gradient_descent_quantizer else False,
+        #     ema_update=False if gradient_descent_quantizer else True,
+        # )
+
+        # self.vector_quantization = ResidualVQ(
+        #     num_quantizers=2,
+        #     codebook_size=n_embeddings // 2,
+        #     dim=embedding_dim,
+        #     commitment_weight=beta,
+        #     learnable_codebook=True if gradient_descent_quantizer else False,
+        #     ema_update=False if gradient_descent_quantizer else True,
+        #     # implicit_neural_codebook=True,
+        #     # mlp_kwargs=dict(
+        #     #     dim_hidden=embedding_dim * 2,
+        #     #     depth=4,
+        #     # ),
+        # )
+
+        self.vector_quantization = ResidualLFQ(
+            codebook_size=1024,
             dim=embedding_dim,
-            decay=0.99,
-            eps=1e-5,
-            commitment_weight=beta,
-            learnable_codebook=True if gradient_descent_quantizer else False,
-            ema_update=False if gradient_descent_quantizer else True,
+            num_quantizers=4,
+            commitment_loss_weight=1.0,
+            entropy_loss_weight=0.01,  # Helps with codebook utilization
         )
 
         self.decoder = LatentDecoder(
@@ -74,8 +99,41 @@ class VQVAE(pl.LightningModule):
             param.requires_grad = False
 
         self._apply_freezing()
+        self._load_pretrained_components(load_path, load_params)
 
         print("VQVAE __init__ complete.")
+
+    def _load_pretrained_components(self, checkpoint_path, component_names):
+        """Load specific components from a checkpoint"""
+        print(f"Loading components {component_names} from {checkpoint_path}")
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        state_dict = checkpoint.get("state_dict", checkpoint)
+
+        for component_name in component_names:
+            if component_name == "encoder":
+                component = self.encoder
+            elif component_name == "decoder":
+                component = self.decoder
+            elif component_name == "vector_quantization":
+                component = self.vector_quantization
+            else:
+                print(f"Warning: Unknown component '{component_name}'")
+                continue
+
+            # Filter state dict for this component
+            prefix = f"{component_name}."
+            component_state = {
+                k.replace(prefix, ""): v
+                for k, v in state_dict.items()
+                if k.startswith(prefix)
+            }
+
+            if component_state:
+                component.load_state_dict(component_state, strict=False)
+                print(f"Loaded {len(component_state)} parameters for {component_name}")
+            else:
+                print(f"Warning: No parameters found for {component_name}")
 
     def _apply_freezing(self):
         """Freeze components based on initialization flags"""
@@ -189,6 +247,7 @@ class VQVAE(pl.LightningModule):
         if not self.freeze_quantizer:
             params_to_optimize.append({"params": self.vector_quantization.parameters()})
 
+        # optimizer = DeepSpeedCPUAdam(
         optimizer = torch.optim.AdamW(
             params_to_optimize,
             lr=self.lr,
@@ -196,9 +255,10 @@ class VQVAE(pl.LightningModule):
             betas=(0.9, 0.95),
         )
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=5, T_mult=1, eta_min=1e-6
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=3, min_lr=1e-6
         )
+
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
@@ -213,21 +273,23 @@ class VQVAE(pl.LightningModule):
 def main() -> None:
     from torchinfo import summary
 
-    device = "cpu"
-
+    device = "cuda"
     model = VQVAE(
         h_dim=256,
-        n_embeddings=512 * 2,
-        embedding_dim=16,
+        n_embeddings=1024,
+        embedding_dim=64,
         beta=0.25,
         lr=1e-3,
-        #
-        #
-        #
         n_heads=4,
-        n_layers=6,
-        patch_size=4,
-    ).to(device)
+        n_layers=3,
+        patch_size=1,
+        freeze_encoder=True,  # Freeze encoder (random initialization)
+        freeze_decoder=True,  # Freeze decoder (random initialization)
+        freeze_quantizer=False,  # Train quantizer only
+        gradient_descent_quantizer=True,
+        load_params=["encoder", "decoder"],
+        load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v2.ckpt",
+    )
 
     summary(model, input_size=(1, 3, 448, 448), device=device)
 

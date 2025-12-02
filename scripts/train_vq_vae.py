@@ -18,23 +18,19 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.dataset import ImageCompressionDataModule
 from src.models.compression.vq_vae import VQVAE
 from callbacks.reconstruction_callback import ReconstructionCallback
+from pytorch_lightning.strategies import DeepSpeedStrategy
 
-print(Fore.GREEN + text2art("Two-Stage Training") + Fore.RESET)
+print(Fore.GREEN + text2art("LIDMP") + Fore.RESET)
 print(Fore.GREEN + "Ved Patel - All Rights Reserved\n" + Fore.RESET)
 
-# Load dataset
 print(Fore.BLUE + "Loading dataset..." + Fore.RESET)
 data_module = ImageCompressionDataModule(
     data_dir="./data/PetImages",
-    batch_size=4,
+    batch_size=2,
 )
 data_module = data_module.setup()
 print(Fore.BLUE + "Dataset loaded successfully\n" + Fore.RESET)
 
-# ============================================
-# STAGE 1: Pretrain Quantizer Only
-# ============================================
-print(Fore.YELLOW + "\n=== STAGE 1: Pretraining Quantizer ===" + Fore.RESET)
 
 model = VQVAE(
     h_dim=256,
@@ -49,6 +45,8 @@ model = VQVAE(
     freeze_decoder=False,  # Freeze decoder (random initialization)
     freeze_quantizer=False,  # Train quantizer only
     gradient_descent_quantizer=True,
+    load_params=["encoder", "decoder"],
+    load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v2.ckpt",
 )
 
 checkpoint_callback_stage1 = ModelCheckpoint(
@@ -59,10 +57,13 @@ checkpoint_callback_stage1 = ModelCheckpoint(
     mode="min",
 )
 
+reconstruction_callback = ReconstructionCallback(
+    input_image_path="images/compress_test.png",
+)
 logger_stage1 = WandbLogger(
     project="LIMPACT - VQ-VAE",
     name="stage1-quantizer-pretrain",
-    log_model="all",
+    log_model=False,
 )
 
 trainer_stage1 = Trainer(
@@ -70,10 +71,18 @@ trainer_stage1 = Trainer(
     accelerator="gpu",
     devices=1,
     precision="bf16-mixed",
-    callbacks=[checkpoint_callback_stage1],
+    callbacks=[checkpoint_callback_stage1, reconstruction_callback],
     logger=logger_stage1,
     val_check_interval=0.5,
     gradient_clip_val=1.0,
+    # strategy=DeepSpeedStrategy(
+    #     stage=2,  # or stage=3 for more aggressive offloading
+    #     offload_optimizer=True,  # Offload optimizer states to CPU
+    #     offload_parameters=True,  # Offload parameters to CPU
+    #     pin_memory=True,
+    #     thread_count=16,
+    # ),
+    enable_model_summary=False,
 )
 
 print(Fore.BLUE + "Starting Stage 1 training..." + Fore.RESET)
