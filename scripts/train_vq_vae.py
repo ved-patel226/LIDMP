@@ -33,7 +33,7 @@ print(Fore.BLUE + "Dataset loaded successfully\n" + Fore.RESET)
 
 model = VQVAE(
     h_dim=256,
-    n_embeddings=1024,
+    n_embeddings=1023,
     embedding_dim=64,
     beta=0.25,
     lr=1e-3,
@@ -46,6 +46,7 @@ model = VQVAE(
     gradient_descent_quantizer=True,
     load_params=["encoder", "decoder"],
     load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v4.ckpt",
+    is_fsq=False,
 )
 
 checkpoint_callback_stage1 = ModelCheckpoint(
