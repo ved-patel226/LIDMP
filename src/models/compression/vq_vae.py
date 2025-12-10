@@ -14,10 +14,10 @@ from vector_quantize_pytorch import (
 
 try:
     from .transformer import LatentDecoder, LatentEncoder
+    from .quantize import GumbelQuantize
 except ImportError:
     from transformer import LatentDecoder, LatentEncoder
-
-from deepspeed.ops.adam import FusedAdam
+    from quantize import GumbelQuantize
 
 
 class VQVAE(pl.LightningModule):
@@ -34,10 +34,10 @@ class VQVAE(pl.LightningModule):
         freeze_encoder=False,
         freeze_decoder=False,
         freeze_quantizer=False,
-        gradient_descent_quantizer=False,
         load_params=None,
         load_path=None,
         is_fsq=False,
+        num_quantizers=2,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -58,13 +58,23 @@ class VQVAE(pl.LightningModule):
             patch_size=patch_size,
         )
 
-        self.vector_quantization = ResidualLFQ(
-            codebook_size=n_embeddings,
-            dim=embedding_dim,
-            num_quantizers=2,
-            commitment_loss_weight=1.0,
-            entropy_loss_weight=0.01,  # Helps with codebook utilization
-            quantize_dropout=True,
+        # self.vector_quantization = ResidualLFQ(
+        #     codebook_size=n_embeddings,
+        #     dim=embedding_dim,
+        #     num_quantizers=num_quantizers,
+        #     commitment_loss_weight=1.0,
+        #     entropy_loss_weight=0.01,  # Helps with codebook utilization
+        #     quantize_dropout=True,
+        # )
+
+        self.vector_quantization = GumbelQuantize(
+            num_hiddens=embedding_dim,
+            embedding_dim=embedding_dim,
+            n_embed=n_embeddings,
+            straight_through=True,
+            kl_weight=beta,
+            temp_init=1.0,
+            use_vqinterface=True,
         )
 
         # self.vector_quantization = LFQ(
@@ -214,17 +224,34 @@ class VQVAE(pl.LightningModule):
     def forward(self, x):
         z_e = self.encoder(x)
         b, c, h, w = z_e.shape
-        z_flat = z_e.permute(0, 2, 3, 1).reshape(b, h * w, c)
 
         if self.is_fsq:
+            z_flat = z_e.permute(0, 2, 3, 1).reshape(b, h * w, c)
             commitment_loss = torch.tensor(0.0, device=x.device)
             quantized, indices = self.vector_quantization(z_flat)
+            quantized_spatial = quantized.view(b, h, w, c).permute(0, 3, 1, 2)
         else:
-            quantized, indices, commitment_loss = self.vector_quantization(z_flat)
+            # GumbelQuantize returns (quantized, commitment_loss, indices)
+            # When use_vqinterface=True, indices is a tuple (None, None, actual_indices)
+            quantized_spatial, commitment_loss, indices = self.vector_quantization(z_e)
+
+            # Handle GumbelQuantize's vqinterface format: (None, None, ind)
+            if isinstance(indices, tuple):
+                indices = indices[-1]  # Get the actual indices (last element)
+
+            # Convert to tensor if needed
+            if not isinstance(indices, torch.Tensor):
+                indices = torch.tensor(indices, device=x.device)
+
+            # Flatten indices for perplexity calculation
+            # GumbelQuantize returns indices with shape (B, H, W)
+            if indices.dim() == 4:
+                indices = indices.view(b, -1)
+            elif indices.dim() == 3:
+                indices = indices.view(b, -1)
 
         perplexity = self._calculate_vq_perplexity(indices, self.n_embeddings)
 
-        quantized_spatial = quantized.view(b, h, w, c).permute(0, 3, 1, 2)
         x_hat = self.decoder(quantized_spatial)
 
         return commitment_loss.mean(), x_hat, indices, perplexity
@@ -379,7 +406,6 @@ def main() -> None:
         freeze_encoder=True,  # Freeze encoder (random initialization)
         freeze_decoder=True,  # Freeze decoder (random initialization)
         freeze_quantizer=False,  # Train quantizer only
-        gradient_descent_quantizer=True,
         # load_params=["encoder", "decoder"],
         # load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v2.ckpt",
     )

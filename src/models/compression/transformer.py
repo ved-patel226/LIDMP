@@ -158,7 +158,10 @@ class DownSample(nn.Module):
 
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=2, padding=1)
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, stride=2, padding=1),
+            nn.LeakyReLU(),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.conv(x)
@@ -171,8 +174,11 @@ class UpSample(nn.Module):
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
         self.upscale_factor = 2
-        self.conv = nn.Conv2d(
-            in_channels, out_channels * (self.upscale_factor**2), 3, padding=1
+        self.conv = nn.Sequential(
+            nn.Conv2d(
+                in_channels, out_channels * (self.upscale_factor**2), 3, padding=1
+            ),
+            nn.LeakyReLU(),
         )
         self.pixel_shuffle = nn.PixelShuffle(self.upscale_factor)
 

@@ -43,10 +43,10 @@ model = VQVAE(
     freeze_encoder=False,  # Freeze encoder (random initialization)
     freeze_decoder=False,  # Freeze decoder (random initialization)
     freeze_quantizer=False,  # Train quantizer only
-    gradient_descent_quantizer=True,
     load_params=["encoder", "decoder"],
-    load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v4.ckpt",
+    load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v11.ckpt",
     is_fsq=False,
+    num_quantizers=2,
 )
 
 checkpoint_callback_stage1 = ModelCheckpoint(

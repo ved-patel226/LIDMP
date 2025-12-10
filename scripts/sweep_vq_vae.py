@@ -53,9 +53,17 @@ def train():
         embedding_dim=config.embedding_dim,
         beta=0.25,
         lr=1e-3,
-        n_heads=8,
-        n_layers=8,
-        patch_size=4,
+        n_heads=4,
+        n_layers=3,
+        patch_size=1,
+        freeze_encoder=False,
+        freeze_decoder=False,
+        freeze_quantizer=False,
+        gradient_descent_quantizer=True,
+        # load_params=["encoder", "decoder"],
+        # load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v4.ckpt",
+        is_fsq=False,
+        num_quantizers=1,
     )
 
     checkpoint_callback = ModelCheckpoint(
@@ -72,7 +80,7 @@ def train():
 
     logger = WandbLogger(
         project="LIMPACT - VQ-VAE",
-        log_model="all",
+        log_model=False,
     )
 
     print(Fore.BLUE + "model loaded successfully\n" + Fore.RESET)
@@ -97,15 +105,16 @@ def train():
 
 if __name__ == "__main__":
     sweep_config = {
-        "method": "grid",
-        "metric": {"name": "train_loss", "goal": "minimize"},
+        "method": "bayes",  # Bayesian optimization for better hyperparameter search
+        "metric": {"name": "val_loss", "goal": "minimize"},
         "early_terminate": {
             "type": "hyperband",
-            "min_iter": 2,
+            "min_iter": 1,
+            "s": 2,
         },
         "parameters": {
-            "n_embeddings": {"values": [1024, 2048]},
-            "embedding_dim": {"values": [8, 16, 32, 64, 128, 256, 512]},
+            "n_embeddings": {"values": [512, 1024, 2048, 4096, 8192]},
+            "embedding_dim": {"values": [32, 64, 128, 256]},
         },
     }
 
