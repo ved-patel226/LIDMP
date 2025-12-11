@@ -40,6 +40,7 @@ class CatDogDataModule(LightningDataModule):
     def __init__(
         self,
         data_dir: str = "./data/PetImages",
+        fabricated_dir: str | None = None,
         batch_size: int = 32,
         num_workers: int = 4,
     ):
@@ -47,6 +48,7 @@ class CatDogDataModule(LightningDataModule):
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.fabricated_dir = fabricated_dir
 
     def load_files(self, data_dir):
         dataset = LabelNameImageFolder(root=data_dir)
@@ -72,7 +74,18 @@ class CatDogDataModule(LightningDataModule):
             ]
         )
 
-        # Create separate dataset instances with different transforms
+        if self.fabricated_dir is not None:
+            train_full_dataset = self.load_files(self.fabricated_dir)
+            train_full_dataset.transform = train_transform
+
+            val_full_dataset = self.load_files(self.data_dir)
+            val_full_dataset.transform = val_transform
+
+            self.val_dataset = val_full_dataset
+            self.train_dataset = train_full_dataset
+
+            return self
+
         train_full_dataset = self.load_files(self.data_dir)
         train_full_dataset.transform = train_transform
 
@@ -92,7 +105,6 @@ class CatDogDataModule(LightningDataModule):
         return self
 
     def train_dataloader(self):
-
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
@@ -121,15 +133,15 @@ class ImageCompressionDataModule(LightningDataModule):
     def __init__(
         self,
         data_dir: str = "./data/PetImages",
+        fabricated_dir: str | None = None,
         batch_size: int = 4,
         num_workers: int = 4,
-        micro_image_dataset: bool = False,
     ):
         super().__init__()
         self.data_dir = data_dir
+        self.fabricated_dir = fabricated_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.micro_image_dataset = micro_image_dataset
 
     def load_files(self, data_dir):
         dataset = datasets.ImageFolder(root=data_dir)
@@ -158,25 +170,31 @@ class ImageCompressionDataModule(LightningDataModule):
             ]
         )
 
+        if self.fabricated_dir is not None:
+            train_full_dataset = self.load_files(self.fabricated_dir)
+            train_full_dataset.transform = train_transform
+
+            val_full_dataset = self.load_files(self.data_dir)
+            val_full_dataset.transform = val_transform
+
+            self.val_dataset = val_full_dataset
+            self.train_dataset = train_full_dataset
+
+            return self
+
         train_full_dataset = self.load_files(self.data_dir)
         train_full_dataset.transform = train_transform
 
         val_full_dataset = self.load_files(self.data_dir)
         val_full_dataset.transform = val_transform
 
-        if self.micro_image_dataset:
-            total = len(train_full_dataset)
-            if total < 100:
-                raise ValueError("Dataset requires at least 100 images")
-            train_dataset = torch.utils.data.Subset(train_full_dataset, range(50))
-        else:
-            total_size = len(train_full_dataset)
-            train_size = int(0.9 * total_size)
-            val_size = total_size - train_size
+        total_size = len(train_full_dataset)
+        train_size = int(0.9 * total_size)
+        val_size = total_size - train_size
 
-            train_dataset, _ = random_split(train_full_dataset, [train_size, val_size])
-            _, val_dataset = random_split(val_full_dataset, [train_size, val_size])
-            self.val_dataset = val_dataset
+        train_dataset, _ = random_split(train_full_dataset, [train_size, val_size])
+        _, val_dataset = random_split(val_full_dataset, [train_size, val_size])
+        self.val_dataset = val_dataset
 
         self.train_dataset = train_dataset
         return self

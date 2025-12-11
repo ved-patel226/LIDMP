@@ -8,16 +8,17 @@ from vector_quantize_pytorch import (
     ResidualVQ,
     ResidualFSQ,
     ResidualLFQ,
+    GroupedResidualFSQ,
     FSQ,
     LFQ,
 )
 
 try:
     from .transformer import LatentDecoder, LatentEncoder
-    from .quantize import GumbelQuantize
+    from .quantize import RFSQ
 except ImportError:
     from transformer import LatentDecoder, LatentEncoder
-    from quantize import GumbelQuantize
+    from quantize import RFSQ
 
 
 class VQVAE(pl.LightningModule):
@@ -45,6 +46,7 @@ class VQVAE(pl.LightningModule):
         self.freeze_encoder = freeze_encoder
         self.freeze_decoder = freeze_decoder
         self.freeze_quantizer = freeze_quantizer
+
         super().__init__()
 
         self.save_hyperparameters()
@@ -58,39 +60,34 @@ class VQVAE(pl.LightningModule):
             patch_size=patch_size,
         )
 
-        # self.vector_quantization = ResidualLFQ(
-        #     codebook_size=n_embeddings,
-        #     dim=embedding_dim,
-        #     num_quantizers=num_quantizers,
-        #     commitment_loss_weight=1.0,
-        #     entropy_loss_weight=0.01,  # Helps with codebook utilization
-        #     quantize_dropout=True,
-        # )
-
-        self.vector_quantization = GumbelQuantize(
-            num_hiddens=embedding_dim,
-            embedding_dim=embedding_dim,
-            n_embed=n_embeddings,
-            straight_through=True,
-            kl_weight=beta,
-            temp_init=1.0,
-            use_vqinterface=True,
-        )
-
-        # self.vector_quantization = LFQ(
-        #     codebook_size=n_embeddings,  # e.g., 65536 = 2^16 bits
-        #     dim=embedding_dim,
-        #     entropy_loss_weight=0.2,
-        #     force_quantization_f32=False,
-        # )
-
         self.is_fsq = is_fsq
         # self.vector_quantization = FSQ(
         #     levels=[16, 16, 4],
         #     num_codebooks=1,
         #     dim=embedding_dim,
-        #     preserve_symmetry=True,
         #     force_quantization_f32=False,
+        #     preserve_symmetry=True,
+        #     noise_dropout=0.1,
+        # )
+
+        self.vector_quantization = GroupedResidualFSQ(
+            dim=embedding_dim,
+            groups=2,
+            levels=[16, 16, 8],
+            num_quantizers=2,
+            force_quantization_f32=False,
+            quantize_dropout=0.1,
+            is_channel_first=True,
+            accept_image_fmap=True,
+        )
+
+        # self.vector_quantization = RFSQ(
+        #     num_hiddens=embedding_dim,
+        #     embedding_dim=embedding_dim,
+        #     n_embed=n_embeddings,
+        #     num_stages=3,
+        #     # strategy="layernorm",
+        #     use_vqinterface=False,
         # )
 
         self.decoder = LatentDecoder(
@@ -223,32 +220,14 @@ class VQVAE(pl.LightningModule):
 
     def forward(self, x):
         z_e = self.encoder(x)
+
         b, c, h, w = z_e.shape
 
-        if self.is_fsq:
-            z_flat = z_e.permute(0, 2, 3, 1).reshape(b, h * w, c)
-            commitment_loss = torch.tensor(0.0, device=x.device)
-            quantized, indices = self.vector_quantization(z_flat)
-            quantized_spatial = quantized.view(b, h, w, c).permute(0, 3, 1, 2)
-        else:
-            # GumbelQuantize returns (quantized, commitment_loss, indices)
-            # When use_vqinterface=True, indices is a tuple (None, None, actual_indices)
-            quantized_spatial, commitment_loss, indices = self.vector_quantization(z_e)
+        commitment_loss = torch.tensor(0.0, device=x.device)
+        # Pass directly as (B, C, H, W) since accept_image_fmap=True
+        quantized_spatial, indices = self.vector_quantization(z_e)
 
-            # Handle GumbelQuantize's vqinterface format: (None, None, ind)
-            if isinstance(indices, tuple):
-                indices = indices[-1]  # Get the actual indices (last element)
-
-            # Convert to tensor if needed
-            if not isinstance(indices, torch.Tensor):
-                indices = torch.tensor(indices, device=x.device)
-
-            # Flatten indices for perplexity calculation
-            # GumbelQuantize returns indices with shape (B, H, W)
-            if indices.dim() == 4:
-                indices = indices.view(b, -1)
-            elif indices.dim() == 3:
-                indices = indices.view(b, -1)
+        # quantized_spatial is already in (B, C, H, W) format
 
         perplexity = self._calculate_vq_perplexity(indices, self.n_embeddings)
 
@@ -261,26 +240,11 @@ class VQVAE(pl.LightningModule):
         Accept integer codebook indices and decode them.
 
         Args:
-            latents: integer codebook indices with shape (B, H*W, Q) where Q is num_quantizers
-            spatial_shape: tuple (H, W) for the spatial dimensions. If None, assumes square.
+            latents: integer codebook indices from RFSQ
+            spatial_shape: tuple (H, W) for the spatial dimensions
         """
-        # get_output_from_indices returns (B, N, D) where N = H*W
+        # RFSQ's get_output_from_indices should return (B, C, H, W) directly
         embeddings = self.vector_quantization.get_output_from_indices(latents)
-
-        b, n, d = embeddings.shape
-
-        if spatial_shape is not None:
-            h, w = spatial_shape
-        else:
-            # Assume square spatial dimensions
-            h = w = int(n**0.5)
-
-        assert (
-            h * w == n
-        ), f"Spatial shape {h}x{w}={h*w} doesn't match sequence length {n}"
-
-        # Reshape from (B, H*W, D) to (B, D, H, W) for the decoder
-        embeddings = embeddings.view(b, h, w, d).permute(0, 3, 1, 2)
 
         return self.decoder(embeddings)
 
@@ -406,6 +370,7 @@ def main() -> None:
         freeze_encoder=True,  # Freeze encoder (random initialization)
         freeze_decoder=True,  # Freeze decoder (random initialization)
         freeze_quantizer=False,  # Train quantizer only
+        is_fsq=True,
         # load_params=["encoder", "decoder"],
         # load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v2.ckpt",
     )
