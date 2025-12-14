@@ -25,7 +25,7 @@ model = VQVAE(
     n_layers=3,
     patch_size=1,
     load_params=["encoder", "decoder", "vector_quantization"],
-    load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v17.ckpt",
+    load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v18.ckpt",
     is_fsq=False,
     num_quantizers=2,
 )

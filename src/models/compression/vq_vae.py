@@ -1,55 +1,32 @@
 import torch
-import torch.nn as nn
 import pytorch_lightning as pl
 import lpips
-import torch.nn.init as init
-from vector_quantize_pytorch import (
-    VectorQuantize,
-    ResidualVQ,
-    ResidualFSQ,
-    ResidualLFQ,
-    GroupedResidualFSQ,
-    FSQ,
-    LFQ,
-)
 
 try:
     from .transformer import LatentDecoder, LatentEncoder
-    from .quantize import RFSQ
 except ImportError:
     from transformer import LatentDecoder, LatentEncoder
-    from quantize import RFSQ
 
 
 class VQVAE(pl.LightningModule):
     def __init__(
         self,
         h_dim,
-        n_embeddings,
         embedding_dim,
-        beta=1.0,
         lr=1e-3,
         n_heads=4,
         n_layers=3,
         patch_size=1,
         freeze_encoder=False,
         freeze_decoder=False,
-        freeze_quantizer=False,
         load_params=None,
         load_path=None,
-        is_fsq=False,
-        num_quantizers=2,
     ):
         super().__init__()
         self.save_hyperparameters()
 
         self.freeze_encoder = freeze_encoder
         self.freeze_decoder = freeze_decoder
-        self.freeze_quantizer = freeze_quantizer
-
-        super().__init__()
-
-        self.save_hyperparameters()
 
         self.encoder = LatentEncoder(
             input_channels=3,
@@ -59,36 +36,6 @@ class VQVAE(pl.LightningModule):
             n_layers=n_layers,
             patch_size=patch_size,
         )
-
-        self.is_fsq = is_fsq
-        # self.vector_quantization = FSQ(
-        #     levels=[16, 16, 4],
-        #     num_codebooks=1,
-        #     dim=embedding_dim,
-        #     force_quantization_f32=False,
-        #     preserve_symmetry=True,
-        #     noise_dropout=0.1,
-        # )
-
-        self.vector_quantization = GroupedResidualFSQ(
-            dim=embedding_dim,
-            groups=2,
-            levels=[16, 16, 8],
-            num_quantizers=2,
-            force_quantization_f32=False,
-            quantize_dropout=0.1,
-            is_channel_first=True,
-            accept_image_fmap=True,
-        )
-
-        # self.vector_quantization = RFSQ(
-        #     num_hiddens=embedding_dim,
-        #     embedding_dim=embedding_dim,
-        #     n_embed=n_embeddings,
-        #     num_stages=3,
-        #     # strategy="layernorm",
-        #     use_vqinterface=False,
-        # )
 
         self.decoder = LatentDecoder(
             latent_channels=embedding_dim,
@@ -101,9 +48,7 @@ class VQVAE(pl.LightningModule):
 
         self.lr = lr
 
-        self.lpips_loss = lpips.LPIPS(net="vgg").to(self.device)
-        self.n_embeddings = n_embeddings
-
+        self.lpips_loss = lpips.LPIPS(net="vgg")
         for param in self.lpips_loss.parameters():
             param.requires_grad = False
 
@@ -126,13 +71,10 @@ class VQVAE(pl.LightningModule):
                 component = self.encoder
             elif component_name == "decoder":
                 component = self.decoder
-            elif component_name == "vector_quantization":
-                component = self.vector_quantization
             else:
                 print(f"Warning: Unknown component '{component_name}'")
                 continue
 
-            # Filter state dict for this component
             prefix = f"{component_name}."
             component_state = {
                 k.replace(prefix, ""): v
@@ -158,168 +100,36 @@ class VQVAE(pl.LightningModule):
                 param.requires_grad = False
             print("Decoder frozen")
 
-        if self.freeze_quantizer:
-            for param in self.vector_quantization.parameters():
-                param.requires_grad = False
-            print("Quantizer frozen")
-
-    # def _calculate_vq_perplexity(self, codebook_indices, num_codebook_entries):
-    #     """
-    #     Calculate perplexity of VQ codebook usage.
-
-    #     Args:
-    #         codebook_indices: Tensor of shape (batch_size, ...) containing codebook indices
-    #         num_codebook_entries: K, the size of the codebook
-
-    #     Returns:
-    #         perplexity: scalar tensor
-    #     """
-    #     flat_indices = codebook_indices.reshape(-1)
-
-    #     unique, counts = torch.unique(flat_indices, return_counts=True)
-
-    #     full_counts = torch.zeros(num_codebook_entries, device=codebook_indices.device)
-    #     full_counts[unique] = counts.float()
-    #     probs = full_counts / full_counts.sum()
-
-    #     probs = probs[probs > 0]
-
-    #     entropy = -(probs * torch.log2(probs)).sum()
-    #     perplexity = 2**entropy
-
-    #     return perplexity
-
-    def _calculate_vq_perplexity(self, codebook_indices, num_codebook_entries):
-        """
-        Calculate perplexity of VQ codebook usage.
-
-        Args:
-            codebook_indices: Tensor of shape (batch_size, ...) containing codebook indices
-            num_codebook_entries: K, the size of the codebook
-
-        Returns:
-            perplexity: scalar tensor
-        """
-        flat_indices = codebook_indices.reshape(-1)
-
-        # Handle FSQ/ResidualFSQ which may return indices outside expected range
-        # or negative values. For these quantizers, compute perplexity based on
-        # unique values actually present rather than assuming a fixed codebook size.
-        unique, counts = torch.unique(flat_indices, return_counts=True)
-
-        # Calculate probabilities directly from counts
-        probs = counts.float() / counts.sum()
-
-        # Filter out zero probabilities (shouldn't happen here, but safe)
-        probs = probs[probs > 0]
-
-        entropy = -(probs * torch.log2(probs)).sum()
-        perplexity = 2**entropy
-
-        return perplexity
-
     def forward(self, x):
         z_e = self.encoder(x)
 
-        b, c, h, w = z_e.shape
+        if self.training:
+            z_q = z_e + torch.empty_like(z_e).uniform_(-0.5, 0.5)
+        else:
+            z_q = torch.round(z_e)
 
-        commitment_loss = torch.tensor(0.0, device=x.device)
-        # Pass directly as (B, C, H, W) since accept_image_fmap=True
-        quantized_spatial, indices = self.vector_quantization(z_e)
+        x_hat = self.decoder(z_q)
+        return x_hat
 
-        # quantized_spatial is already in (B, C, H, W) format
-
-        perplexity = self._calculate_vq_perplexity(indices, self.n_embeddings)
-
-        x_hat = self.decoder(quantized_spatial)
-
-        return commitment_loss.mean(), x_hat, indices, perplexity
-
-    def forward_with_latents(self, latents, spatial_shape=None):
-        """
-        Accept integer codebook indices and decode them.
-
-        Args:
-            latents: integer codebook indices from RFSQ
-            spatial_shape: tuple (H, W) for the spatial dimensions
-        """
-        # RFSQ's get_output_from_indices should return (B, C, H, W) directly
-        embeddings = self.vector_quantization.get_output_from_indices(latents)
-
-        return self.decoder(embeddings)
-
-    # def _calculate_loss(
-    #     self, x_hat, x, embedding_loss, perplexity=None, log_name="train", indices=None
-    # ):
-    #     lpips_loss_val = self.lpips_loss(x_hat, x).mean()
-
-    #     loss = lpips_loss_val + embedding_loss
-
-    #     opt = self.optimizers() if hasattr(self, "optimizers") else None
-    #     lr = opt.param_groups[0]["lr"] if opt else self.lr
-    #     self.log("lr", lr, prog_bar=True)
-
-    #     self.log(f"{log_name}_loss", loss, prog_bar=True)
-    #     self.log(f"{log_name}_embedding_loss", embedding_loss)
-    #     self.log(f"{log_name}_lpips_loss", lpips_loss_val)
-
-    #     if perplexity is not None:
-    #         self.log(f"{log_name}_perplexity", perplexity)
-    #     if indices is not None:
-    #         unique_codes = len(torch.unique(indices))
-    #         self.log(f"{log_name}_unique_codes", unique_codes)
-    #         self.log(
-    #             f"{log_name}_codebook_utilization",
-    #             unique_codes / self.hparams.n_embeddings,
-    #         )
-    #     return loss
-
-    def _calculate_loss(
-        self, x_hat, x, embedding_loss, perplexity=None, log_name="train", indices=None
-    ):
+    def _calculate_loss(self, x_hat, x, log_name="train"):
         lpips_loss_val = self.lpips_loss(x_hat, x).mean()
-
-        loss = lpips_loss_val + embedding_loss
 
         opt = self.optimizers() if hasattr(self, "optimizers") else None
         lr = opt.param_groups[0]["lr"] if opt else self.lr
         self.log("lr", lr, prog_bar=True)
+        self.log(f"{log_name}_loss", lpips_loss_val, prog_bar=True)
 
-        self.log(f"{log_name}_loss", loss, prog_bar=True)
-        self.log(f"{log_name}_embedding_loss", embedding_loss)
-        self.log(f"{log_name}_lpips_loss", lpips_loss_val)
-
-        if perplexity is not None:
-            self.log(f"{log_name}_perplexity", perplexity)
-        if indices is not None:
-            unique_codes = len(torch.unique(indices))
-            self.log(f"{log_name}_unique_codes", float(unique_codes))
-            # For FSQ, codebook utilization is less meaningful, but we can still log it
-            # as a ratio of unique codes used vs total possible combinations
-            self.log(
-                f"{log_name}_codebook_utilization",
-                float(unique_codes) / max(self.hparams.n_embeddings, unique_codes),
-            )
-        return loss
+        return lpips_loss_val
 
     def training_step(self, batch, _batch_idx):
         x, _ = batch
-        embedding_loss, x_hat, indices, perplexity = self(x)
-
-        loss = self._calculate_loss(
-            x_hat, x, embedding_loss, perplexity, log_name="train", indices=indices
-        )
-        return loss
+        x_hat = self(x)
+        return self._calculate_loss(x_hat, x, log_name="train")
 
     def validation_step(self, batch, _batch_idx):
         x, _ = batch
-        embedding_loss, x_hat, indices, perplexity = self(x)
-
-        loss = self._calculate_loss(
-            x_hat, x, embedding_loss, perplexity, log_name="val", indices=indices
-        )
-
-        return loss
+        x_hat = self(x)
+        return self._calculate_loss(x_hat, x, log_name="val")
 
     def configure_optimizers(self):
         params_to_optimize = []
@@ -328,10 +138,7 @@ class VQVAE(pl.LightningModule):
             params_to_optimize.append({"params": self.encoder.parameters()})
         if not self.freeze_decoder:
             params_to_optimize.append({"params": self.decoder.parameters()})
-        if not self.freeze_quantizer:
-            params_to_optimize.append({"params": self.vector_quantization.parameters()})
 
-        # optimizer = FusedAdam(
         optimizer = torch.optim.AdamW(
             params_to_optimize,
             lr=self.lr,
@@ -360,19 +167,11 @@ def main() -> None:
     device = "cpu"
     model = VQVAE(
         h_dim=256,
-        n_embeddings=1023,
         embedding_dim=64,
-        beta=0.25,
         lr=1e-3,
         n_heads=4,
         n_layers=3,
         patch_size=1,
-        freeze_encoder=True,  # Freeze encoder (random initialization)
-        freeze_decoder=True,  # Freeze decoder (random initialization)
-        freeze_quantizer=False,  # Train quantizer only
-        is_fsq=True,
-        # load_params=["encoder", "decoder"],
-        # load_path="checkpoints/stage1/vq_vae_quantizer_pretrain-v2.ckpt",
     )
 
     summary(
@@ -381,12 +180,6 @@ def main() -> None:
         col_names=["input_size", "output_size", "num_params", "trainable"],
         device=device,
     )
-
-    x = torch.randn(1, 3, 448, 448).to(device)
-
-    _, _, indices, _ = model(x)
-
-    print(indices.shape)
 
 
 if __name__ == "__main__":
